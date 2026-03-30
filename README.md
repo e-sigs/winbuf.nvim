@@ -38,7 +38,7 @@ No existing Neovim plugin does this. Bufferline, barbar, and others render in th
 
 ```lua
 {
-  "your-username/winbuf.nvim",
+  "e-sigs/winbuf.nvim",
   event = "VeryLazy",
   dependencies = { "nvim-tree/nvim-web-devicons" },
   opts = {},
@@ -68,7 +68,7 @@ No existing Neovim plugin does this. Bufferline, barbar, and others render in th
 
 ```lua
 use {
-  "your-username/winbuf.nvim",
+  "e-sigs/winbuf.nvim",
   requires = { "nvim-tree/nvim-web-devicons" },
   config = function()
     require("winbuf").setup()
@@ -171,6 +171,10 @@ winbuf.refresh()           -- Refresh all winbars
 
 4. **Closing**: Closing a buffer from a window removes it from that window's tracking. If no other window is tracking it, the buffer is deleted entirely. If another window still has it, the buffer stays alive.
 
+## Author
+
+Signory Somsavath ([@e-sigs](https://github.com/e-sigs))
+
 ## License
 
-MIT
+[MIT](LICENSE) - Copyright (c) 2026 Signory Somsavath
