@@ -4,10 +4,17 @@
 local M = {}
 local api = vim.api
 
+--- Guard flag to suppress tracking during multi-step operations (move, close_split)
+--- When true, BufEnter/WinEnter autocmds will not add buffers to windows
+M._suppress_tracking = false
+
 --- Get the buffer list for a window
 --- @param win number
 --- @return number[]
 function M.get_win_bufs(win)
+  if not api.nvim_win_is_valid(win) then
+    return {}
+  end
   local ok, bufs = pcall(api.nvim_win_get_var, win, "winbuf_bufs")
   if ok and type(bufs) == "table" then
     return vim.tbl_filter(function(b)
@@ -30,6 +37,9 @@ end
 --- @param win number
 --- @param buf number
 function M.add_buf_to_win(win, buf)
+  if not api.nvim_win_is_valid(win) then
+    return
+  end
   if not api.nvim_buf_is_valid(buf) or not vim.bo[buf].buflisted then
     return
   end
@@ -51,6 +61,9 @@ end
 --- @param win number
 --- @param buf number
 function M.remove_buf_from_win(win, buf)
+  if not api.nvim_win_is_valid(win) then
+    return
+  end
   local bufs = M.get_win_bufs(win)
   local new_bufs = vim.tbl_filter(function(b)
     return b ~= buf
@@ -91,6 +104,9 @@ function M.setup()
   api.nvim_create_autocmd("BufEnter", {
     group = group,
     callback = function()
+      if M._suppress_tracking then
+        return
+      end
       local win = api.nvim_get_current_win()
       local buf = api.nvim_get_current_buf()
       M.add_buf_to_win(win, buf)
@@ -101,6 +117,9 @@ function M.setup()
   api.nvim_create_autocmd("WinEnter", {
     group = group,
     callback = function()
+      if M._suppress_tracking then
+        return
+      end
       local win = api.nvim_get_current_win()
       local buf = api.nvim_get_current_buf()
       M.add_buf_to_win(win, buf)
@@ -112,6 +131,8 @@ function M.setup()
     group = group,
     callback = function(ev)
       M.remove_buf_from_all(ev.buf)
+      -- Prune click handler cache for deleted buffer
+      require("winbuf.render").prune_click_cache(ev.buf)
       vim.schedule(function()
         require("winbuf.render").refresh_all()
       end)
@@ -122,6 +143,16 @@ function M.setup()
     group = group,
     callback = function()
       require("winbuf.render").refresh_all()
+    end,
+  })
+
+  -- Refresh winbar when diagnostics change (for diagnostic badges)
+  api.nvim_create_autocmd("DiagnosticChanged", {
+    group = group,
+    callback = function()
+      if require("winbuf").config.diagnostics then
+        require("winbuf.render").refresh_all()
+      end
     end,
   })
 

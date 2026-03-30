@@ -3,6 +3,9 @@
 local M = {}
 local api = vim.api
 
+--- Click handler cache to avoid creating closures on every render
+local click_cache = {}
+
 --- Get diagnostic counts for a buffer
 --- @param buf number
 --- @return table<string, number> { error = n, warning = n }
@@ -22,18 +25,29 @@ local function get_diagnostics(buf)
   return counts
 end
 
---- Truncate a name to max_len characters with ellipsis
+--- Truncate a name to max_len characters with ellipsis (multibyte safe)
 --- @param name string
 --- @param max_len number
 --- @return string
 local function truncate(name, max_len)
-  if not max_len or max_len <= 0 or #name <= max_len then
+  if not max_len or max_len <= 0 then
     return name
   end
-  if max_len <= 3 then
-    return name:sub(1, max_len)
+  local char_len = vim.fn.strcharlen(name)
+  if char_len <= max_len then
+    return name
   end
-  return name:sub(1, max_len - 1) .. "…"
+  if max_len <= 1 then
+    return vim.fn.strcharpart(name, 0, max_len)
+  end
+  return vim.fn.strcharpart(name, 0, max_len - 1) .. "…"
+end
+
+--- Escape percent signs in a string for statusline/winbar rendering
+--- @param s string
+--- @return string
+local function escape_percent(s)
+  return s:gsub("%%", "%%%%")
 end
 
 --- Generate padding string
@@ -82,14 +96,18 @@ function M.render(win)
   local parts = {}
 
   for idx, buf in ipairs(bufs) do
-    local name = vim.fn.fnamemodify(api.nvim_buf_get_name(buf), ":t")
-    if name == "" then
-      name = config.no_name
+    -- Get raw filename for icon lookup, then truncate for display
+    local raw_name = vim.fn.fnamemodify(api.nvim_buf_get_name(buf), ":t")
+    if raw_name == "" then
+      raw_name = config.no_name
     end
 
+    local display_name = raw_name
     if do_truncate then
-      name = truncate(name, max_name)
+      display_name = truncate(raw_name, max_name)
     end
+    -- Escape percent signs in filename for statusline rendering
+    display_name = escape_percent(display_name)
 
     local is_active = buf == cur_buf
     local is_modified = vim.bo[buf].modified
@@ -108,9 +126,9 @@ function M.render(win)
       table.insert(content, tostring(idx) .. " ")
     end
 
-    -- File icon
+    -- File icon (use raw_name for accurate extension matching)
     if has_devicons then
-      local ft_icon, icon_hl = devicons.get_icon(name)
+      local ft_icon, icon_hl = devicons.get_icon(raw_name)
       if ft_icon then
         -- Use devicon highlight for active tab, dimmed for inactive
         if is_active and icon_hl then
@@ -122,7 +140,7 @@ function M.render(win)
     end
 
     -- File name
-    table.insert(content, name)
+    table.insert(content, display_name)
 
     -- Modified indicator
     if is_modified then
@@ -132,16 +150,13 @@ function M.render(win)
     -- Diagnostics
     if diag_enabled then
       local counts = get_diagnostics(buf)
+      local total = counts.error + counts.warning
       local diag_text = ""
 
-      if config.diagnostics_indicator then
-        diag_text = config.diagnostics_indicator(
-          counts.error + counts.warning,
-          counts.error > 0 and "error" or "warning",
-          counts,
-          { buffer = buf }
-        )
-      else
+      if total > 0 and config.diagnostics_indicator then
+        local level = counts.error > 0 and "error" or "warning"
+        diag_text = config.diagnostics_indicator(total, level, counts)
+      elseif total > 0 then
         if counts.error > 0 then
           local diag_hl = is_active and "%#WinBufActiveDiagError#" or "%#WinBufInactiveDiagError#"
           diag_text = diag_text .. " " .. diag_hl .. " " .. counts.error .. hl
@@ -225,18 +240,32 @@ function M.refresh_all()
   end
 end
 
+--- Prune click handler cache entries for a deleted buffer
+--- @param buf number
+function M.prune_click_cache(buf)
+  local switch_key = "switch_click_" .. buf
+  local close_key = "close_click_" .. buf
+  click_cache[switch_key] = nil
+  click_cache[close_key] = nil
+end
+
 --- Setup rendering
 function M.setup()
   M.refresh_all()
 end
 
--- Dynamic click handlers via metatable
+-- Dynamic click handlers via metatable with caching
 setmetatable(M, {
   __index = function(_, key)
+    -- Return cached handler if available
+    if click_cache[key] then
+      return click_cache[key]
+    end
+
     local switch_buf = key:match("^switch_click_(%d+)$")
     if switch_buf then
       local buf = tonumber(switch_buf)
-      return function(_, _, button, _)
+      local handler = function(_, _, button, _)
         if button == "l" then
           if api.nvim_buf_is_valid(buf) then
             api.nvim_set_current_buf(buf)
@@ -245,14 +274,18 @@ setmetatable(M, {
           require("winbuf.actions").close_buf(buf)
         end
       end
+      click_cache[key] = handler
+      return handler
     end
 
     local close_buf = key:match("^close_click_(%d+)$")
     if close_buf then
       local buf = tonumber(close_buf)
-      return function(_, _, _, _)
+      local handler = function(_, _, _, _)
         require("winbuf.actions").close_buf(buf)
       end
+      click_cache[key] = handler
+      return handler
     end
   end,
 })

@@ -134,7 +134,31 @@ end
 --- Setup winbuf.nvim
 --- @param opts? WinBufConfig
 function M.setup(opts)
-  M.config = vim.tbl_deep_extend("force", defaults, opts or {})
+  opts = opts or {}
+
+  -- Validate user-provided config types
+  vim.validate({
+    style = { opts.style, "string", true },
+    separator_style = { opts.separator_style, { "string", "table" }, true },
+    indicator = { opts.indicator, "table", true },
+    icons = { opts.icons, "table", true },
+    highlights = { opts.highlights, "table", true },
+    close_icon = { opts.close_icon, "string", true },
+    modified_icon = { opts.modified_icon, "string", true },
+    no_name = { opts.no_name, "string", true },
+    hide_single = { opts.hide_single, "boolean", true },
+    show_close_icon = { opts.show_close_icon, "boolean", true },
+    padding = { opts.padding, "number", true },
+    max_name_length = { opts.max_name_length, "number", true },
+    diagnostics = { opts.diagnostics, { "boolean", "string" }, true },
+    diagnostics_indicator = { opts.diagnostics_indicator, "function", true },
+    show_buffer_ordinal = { opts.show_buffer_ordinal, "boolean", true },
+    truncate_names = { opts.truncate_names, "boolean", true },
+    buf_delete = { opts.buf_delete, "function", true },
+    fill_hl = { opts.fill_hl, "string", true },
+  })
+
+  M.config = vim.tbl_deep_extend("force", defaults, opts)
 
   require("winbuf.highlights").setup(M.config.highlights)
   require("winbuf.tracker").setup()
@@ -147,13 +171,15 @@ end
 --- Close a buffer from the current window only.
 --- If the buffer isn't tracked in any other window, it gets deleted entirely.
 --- @param buf? number Buffer to close (defaults to current buffer)
-function M.close_buf(buf)
-  require("winbuf.actions").close_buf(buf)
+--- @param force? boolean Force close even if buffer is modified
+function M.close_buf(buf, force)
+  require("winbuf.actions").close_buf(buf, force)
 end
 
 --- Close the current split and delete any buffers not tracked in other windows.
-function M.close_split()
-  require("winbuf.actions").close_split()
+--- @param force? boolean Force delete orphaned modified buffers
+function M.close_split(force)
+  require("winbuf.actions").close_split(force)
 end
 
 --- Move the current buffer to an adjacent split.

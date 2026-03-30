@@ -5,19 +5,51 @@ local api = vim.api
 
 --- Delete a buffer using custom or fallback method
 --- @param buf number
-local function delete_buf(buf)
+--- @param force? boolean Force delete even if modified
+local function delete_buf(buf, force)
   local config = require("winbuf").config
   if config.buf_delete then
     config.buf_delete(buf)
   else
-    pcall(api.nvim_buf_delete, buf, { force = false })
+    pcall(api.nvim_buf_delete, buf, { force = force or false })
   end
+end
+
+--- Find the nearest neighbor index in a buffer list after removing one
+--- @param bufs number[] The full buffer list before removal
+--- @param buf number The buffer being removed
+--- @return number|nil The buffer to switch to, or nil if none
+local function find_nearest_neighbor(bufs, buf)
+  local remaining = {}
+  local closed_idx = 1
+
+  for i, b in ipairs(bufs) do
+    if b == buf then
+      closed_idx = i
+    elseif api.nvim_buf_is_valid(b) and vim.bo[b].buflisted then
+      table.insert(remaining, { buf = b, idx = i })
+    end
+  end
+
+  if #remaining == 0 then
+    return nil
+  end
+
+  -- Prefer the next buffer, fall back to previous
+  for _, entry in ipairs(remaining) do
+    if entry.idx > closed_idx then
+      return entry.buf
+    end
+  end
+  -- No buffer after closed_idx, use the last one before it
+  return remaining[#remaining].buf
 end
 
 --- Close a buffer from the current window only.
 --- Removes from window tracking. Deletes buffer entirely if no other window has it.
 --- @param buf? number Buffer to close (defaults to current)
-function M.close_buf(buf)
+--- @param force? boolean Force close even if modified
+function M.close_buf(buf, force)
   local tracker = require("winbuf.tracker")
   buf = buf or api.nvim_get_current_buf()
 
@@ -28,17 +60,18 @@ function M.close_buf(buf)
   local win = api.nvim_get_current_win()
   local win_bufs = tracker.get_win_bufs(win)
 
+  -- Suppress tracking to prevent BufEnter from re-adding during switch
+  tracker._suppress_tracking = true
+
   -- Remove buffer from this window's tracking
   tracker.remove_buf_from_win(win, buf)
 
-  -- If this buffer is currently displayed, switch to another
+  -- If this buffer is currently displayed, switch to nearest neighbor
   if api.nvim_win_get_buf(win) == buf then
-    local remaining = vim.tbl_filter(function(b)
-      return b ~= buf and api.nvim_buf_is_valid(b) and vim.bo[b].buflisted
-    end, win_bufs)
+    local neighbor = find_nearest_neighbor(win_bufs, buf)
 
-    if #remaining > 0 then
-      api.nvim_win_set_buf(win, remaining[#remaining])
+    if neighbor then
+      api.nvim_win_set_buf(win, neighbor)
     else
       if #api.nvim_list_wins() > 1 then
         vim.cmd("close")
@@ -48,16 +81,19 @@ function M.close_buf(buf)
     end
   end
 
+  tracker._suppress_tracking = false
+
   -- Only fully delete if no other window is tracking this buffer
-  if not tracker.is_buf_in_any_win(buf, win) then
-    delete_buf(buf)
+  if api.nvim_buf_is_valid(buf) and not tracker.is_buf_in_any_win(buf) then
+    delete_buf(buf, force)
   end
 
   require("winbuf.render").refresh_all()
 end
 
 --- Close the current split and delete any buffers not tracked in other windows.
-function M.close_split()
+--- @param force? boolean Force delete orphaned modified buffers
+function M.close_split(force)
   local tracker = require("winbuf.tracker")
   local win = api.nvim_get_current_win()
   local win_bufs = tracker.get_win_bufs(win)
@@ -66,13 +102,18 @@ function M.close_split()
     return
   end
 
+  -- Suppress tracking to prevent WinEnter/BufEnter from re-adding orphans
+  tracker._suppress_tracking = true
+
   vim.cmd("close")
 
-  -- Delete orphaned buffers
+  tracker._suppress_tracking = false
+
+  -- Delete orphaned buffers (not tracked in any remaining window)
   for _, buf in ipairs(win_bufs) do
     if api.nvim_buf_is_valid(buf) and vim.bo[buf].buflisted then
       if not tracker.is_buf_in_any_win(buf) then
-        delete_buf(buf)
+        delete_buf(buf, force)
       end
     end
   end
@@ -93,19 +134,23 @@ function M.move_buf(direction)
     return
   end
 
+  -- Suppress tracking for the entire move operation
+  tracker._suppress_tracking = true
+
   -- Try to move to the target direction
   vim.cmd("wincmd " .. direction)
   local target_win = api.nvim_get_current_win()
 
   if target_win == cur_win then
-    -- No split in that direction — create one
-    if direction == "l" or direction == "h" then
-      vim.cmd("vsplit")
-    else
-      vim.cmd("split")
-    end
-    if direction == "h" or direction == "k" then
-      vim.cmd("wincmd " .. direction:upper())
+    -- No split in that direction — create one adjacent
+    if direction == "l" then
+      vim.cmd("rightbelow vsplit")
+    elseif direction == "h" then
+      vim.cmd("leftabove vsplit")
+    elseif direction == "j" then
+      vim.cmd("rightbelow split")
+    elseif direction == "k" then
+      vim.cmd("leftabove split")
     end
     target_win = api.nvim_get_current_win()
   end
@@ -113,24 +158,29 @@ function M.move_buf(direction)
   -- Go back to the original window
   api.nvim_set_current_win(cur_win)
 
-  -- Find another buffer in the source window to switch to
+  -- Find nearest neighbor buffer in the source window to switch to
   local win_bufs = tracker.get_win_bufs(cur_win)
-  local remaining = vim.tbl_filter(function(b)
-    return api.nvim_buf_is_valid(b) and vim.bo[b].buflisted and b ~= buf
-  end, win_bufs)
+  local neighbor = find_nearest_neighbor(win_bufs, buf)
 
-  if #remaining > 0 then
-    api.nvim_win_set_buf(cur_win, remaining[#remaining])
+  if neighbor then
+    api.nvim_win_set_buf(cur_win, neighbor)
   else
-    vim.cmd("close")
+    -- No other buffers — close the source split
+    if #api.nvim_list_wins() > 1 then
+      vim.cmd("close")
+    end
   end
 
   -- Remove the buffer from the source window's tracking
   tracker.remove_buf_from_win(cur_win, buf)
 
-  -- Set the buffer in the target window
+  -- Set the buffer in the target window and add to tracking
   api.nvim_set_current_win(target_win)
   api.nvim_win_set_buf(target_win, buf)
+  tracker.add_buf_to_win(target_win, buf)
+
+  -- Re-enable tracking
+  tracker._suppress_tracking = false
 
   require("winbuf.render").refresh_all()
 end
