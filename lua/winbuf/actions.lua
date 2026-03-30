@@ -121,6 +121,48 @@ function M.close_split(force)
   require("winbuf.render").refresh_all()
 end
 
+--- Check if a window is truly in the expected direction from the source window.
+--- Prevents wincmd from "wrapping" to a diagonal/adjacent window.
+--- @param src_win number Source window handle
+--- @param tgt_win number Target window handle
+--- @param direction string One of "h", "j", "k", "l"
+--- @return boolean
+local function is_in_direction(src_win, tgt_win, direction)
+  local src_pos = api.nvim_win_get_position(src_win) -- { row, col }
+  local tgt_pos = api.nvim_win_get_position(tgt_win)
+  local src_h = api.nvim_win_get_height(src_win)
+  local src_w = api.nvim_win_get_width(src_win)
+  local tgt_h = api.nvim_win_get_height(tgt_win)
+  local tgt_w = api.nvim_win_get_width(tgt_win)
+
+  if direction == "j" then
+    -- Target must start at or below the bottom edge of source
+    -- and overlap horizontally (+1 accounts for window separator/statusline)
+    return tgt_pos[1] >= src_pos[1] + src_h
+      and tgt_pos[2] < src_pos[2] + src_w
+      and tgt_pos[2] + tgt_w > src_pos[2]
+  elseif direction == "k" then
+    -- Target bottom edge must be at or above the top edge of source
+    -- and overlap horizontally
+    return tgt_pos[1] + tgt_h <= src_pos[1]
+      and tgt_pos[2] < src_pos[2] + src_w
+      and tgt_pos[2] + tgt_w > src_pos[2]
+  elseif direction == "l" then
+    -- Target must start at or past the right edge of source
+    -- and overlap vertically (+1 accounts for window separator)
+    return tgt_pos[2] >= src_pos[2] + src_w
+      and tgt_pos[1] < src_pos[1] + src_h
+      and tgt_pos[1] + tgt_h > src_pos[1]
+  elseif direction == "h" then
+    -- Target right edge must be at or before the left edge of source
+    -- and overlap vertically
+    return tgt_pos[2] + tgt_w <= src_pos[2]
+      and tgt_pos[1] < src_pos[1] + src_h
+      and tgt_pos[1] + tgt_h > src_pos[1]
+  end
+  return false
+end
+
 --- Move the current buffer to an adjacent split (VS Code editor group style).
 --- Creates a new split if none exists in that direction.
 --- @param direction string One of "h", "j", "k", "l"
@@ -141,8 +183,17 @@ function M.move_buf(direction)
   vim.cmd("wincmd " .. direction)
   local target_win = api.nvim_get_current_win()
 
-  if target_win == cur_win then
-    -- No split in that direction — create one adjacent
+  -- Verify the target is actually in the intended direction
+  -- wincmd can jump diagonally (e.g., a|b with wincmd j goes to b)
+  local need_new_split = target_win == cur_win
+    or not is_in_direction(cur_win, target_win, direction)
+
+  if need_new_split then
+    -- Go back to source if wincmd moved us to the wrong window
+    if target_win ~= cur_win then
+      api.nvim_set_current_win(cur_win)
+    end
+    -- Create a new split in the correct direction
     if direction == "l" then
       vim.cmd("rightbelow vsplit")
     elseif direction == "h" then
