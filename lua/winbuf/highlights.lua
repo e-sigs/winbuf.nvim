@@ -6,39 +6,39 @@ local api = vim.api
 --- @type WinBufHighlights
 local highlights = {}
 
+--- Highlight group definitions: { name, config_key }
+local hl_groups = {
+  { "WinBufActive",            "active" },
+  { "WinBufActiveSep",         "active_sep" },
+  { "WinBufInactive",          "inactive" },
+  { "WinBufInactiveSep",       "inactive_sep" },
+  { "WinBufActiveClose",       "active_close" },
+  { "WinBufInactiveClose",     "inactive_close" },
+  { "WinBufActiveModified",    "active_modified" },
+  { "WinBufInactiveModified",  "inactive_modified" },
+  { "WinBufActiveDiagError",   "active_diag_error" },
+  { "WinBufActiveDiagWarn",    "active_diag_warn" },
+  { "WinBufInactiveDiagError", "inactive_diag_error" },
+  { "WinBufInactiveDiagWarn",  "inactive_diag_warn" },
+  { "WinBufFill",              "fill" },
+  { "WinBufActiveUnderline",   "active_underline" },
+}
+
 --- Apply highlight groups
 local function apply()
-  if highlights.active then
-    api.nvim_set_hl(0, "WinBufActive", {
-      fg = highlights.active.fg,
-      bg = highlights.active.bg,
-      bold = highlights.active.bold,
-      italic = highlights.active.italic,
-    })
-  end
-  if highlights.active_sep then
-    api.nvim_set_hl(0, "WinBufActiveSep", {
-      fg = highlights.active_sep.fg,
-      bg = highlights.active_sep.bg,
-      bold = highlights.active_sep.bold,
-      italic = highlights.active_sep.italic,
-    })
-  end
-  if highlights.inactive then
-    api.nvim_set_hl(0, "WinBufInactive", {
-      fg = highlights.inactive.fg,
-      bg = highlights.inactive.bg,
-      bold = highlights.inactive.bold,
-      italic = highlights.inactive.italic,
-    })
-  end
-  if highlights.inactive_sep then
-    api.nvim_set_hl(0, "WinBufInactiveSep", {
-      fg = highlights.inactive_sep.fg,
-      bg = highlights.inactive_sep.bg,
-      bold = highlights.inactive_sep.bold,
-      italic = highlights.inactive_sep.italic,
-    })
+  for _, def in ipairs(hl_groups) do
+    local name, key = def[1], def[2]
+    local hl = highlights[key]
+    if hl then
+      api.nvim_set_hl(0, name, {
+        fg = hl.fg,
+        bg = hl.bg,
+        bold = hl.bold,
+        italic = hl.italic,
+        underline = hl.underline,
+        sp = hl.sp,
+      })
+    end
   end
 end
 
