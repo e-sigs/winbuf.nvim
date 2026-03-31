@@ -1,13 +1,9 @@
--- winbuf.nvim - Highlight group management
-
 local M = {}
 local api = vim.api
 
---- @type WinBufHighlights
-local highlights = {}
+local hl_config = {}
 
---- Highlight group definitions: { name, config_key }
-local hl_groups = {
+local groups = {
   { "WinBufActive",            "active" },
   { "WinBufActiveSep",         "active_sep" },
   { "WinBufInactive",          "inactive" },
@@ -24,31 +20,23 @@ local hl_groups = {
   { "WinBufActiveUnderline",   "active_underline" },
 }
 
---- Apply highlight groups
 local function apply()
-  for _, def in ipairs(hl_groups) do
-    local name, key = def[1], def[2]
-    local hl = highlights[key]
+  for _, def in ipairs(groups) do
+    local hl = hl_config[def[2]]
     if hl then
-      api.nvim_set_hl(0, name, {
-        fg = hl.fg,
-        bg = hl.bg,
-        bold = hl.bold,
-        italic = hl.italic,
-        underline = hl.underline,
-        sp = hl.sp,
+      api.nvim_set_hl(0, def[1], {
+        fg = hl.fg, bg = hl.bg,
+        bold = hl.bold, italic = hl.italic,
+        underline = hl.underline, sp = hl.sp,
       })
     end
   end
 end
 
---- Setup highlights
---- @param hl WinBufHighlights
 function M.setup(hl)
-  highlights = hl
+  hl_config = hl
   apply()
 
-  -- Reapply on colorscheme change
   api.nvim_create_autocmd("ColorScheme", {
     group = api.nvim_create_augroup("WinBufHighlights", { clear = true }),
     callback = apply,

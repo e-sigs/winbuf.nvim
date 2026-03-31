@@ -1,89 +1,90 @@
--- winbuf.nvim - Buffer actions (close, move, cycle)
+-- Buffer actions: close, move, cycle
 
 local M = {}
 local api = vim.api
 
---- Delete a buffer using custom or fallback method
---- @param buf number
---- @param force? boolean Force delete even if modified
 local function delete_buf(buf, force)
-  local config = require("winbuf").config
-  if config.buf_delete then
-    config.buf_delete(buf)
+  local custom = require("winbuf").config.buf_delete
+  if custom then
+    custom(buf)
   else
     pcall(api.nvim_buf_delete, buf, { force = force or false })
   end
 end
 
---- Find the nearest neighbor index in a buffer list after removing one
---- @param bufs number[] The full buffer list before removal
---- @param buf number The buffer being removed
---- @return number|nil The buffer to switch to, or nil if none
-local function find_nearest_neighbor(bufs, buf)
+-- After closing a tab, pick the next one to the right. If there's nothing to
+-- the right, fall back to the closest one to the left. Matches VS Code / browser behavior.
+local function nearest_neighbor(bufs, buf)
   local remaining = {}
-  local closed_idx = 1
+  local closed_at = 1
 
   for i, b in ipairs(bufs) do
     if b == buf then
-      closed_idx = i
+      closed_at = i
     elseif api.nvim_buf_is_valid(b) and vim.bo[b].buflisted then
       table.insert(remaining, { buf = b, idx = i })
     end
   end
 
-  if #remaining == 0 then
-    return nil
-  end
+  if #remaining == 0 then return nil end
 
-  -- Prefer the next buffer, fall back to previous
   for _, entry in ipairs(remaining) do
-    if entry.idx > closed_idx then
-      return entry.buf
-    end
+    if entry.idx > closed_at then return entry.buf end
   end
-  -- No buffer after closed_idx, use the last one before it
   return remaining[#remaining].buf
 end
 
---- Close a buffer from the current window only.
---- Removes from window tracking. Deletes buffer entirely if no other window has it.
---- @param buf? number Buffer to close (defaults to current)
---- @param force? boolean Force close even if modified
+-- wincmd can jump diagonally (e.g. in a|b layout, wincmd j lands on b).
+-- This checks the target is geometrically where we actually want it.
+local function is_in_direction(src, tgt, dir)
+  local sp = api.nvim_win_get_position(src)
+  local tp = api.nvim_win_get_position(tgt)
+  local sh = api.nvim_win_get_height(src)
+  local sw = api.nvim_win_get_width(src)
+  local th = api.nvim_win_get_height(tgt)
+  local tw = api.nvim_win_get_width(tgt)
+
+  if dir == "j" then
+    return tp[1] >= sp[1] + sh
+      and tp[2] < sp[2] + sw and tp[2] + tw > sp[2]
+  elseif dir == "k" then
+    return tp[1] + th <= sp[1]
+      and tp[2] < sp[2] + sw and tp[2] + tw > sp[2]
+  elseif dir == "l" then
+    return tp[2] >= sp[2] + sw
+      and tp[1] < sp[1] + sh and tp[1] + th > sp[1]
+  elseif dir == "h" then
+    return tp[2] + tw <= sp[2]
+      and tp[1] < sp[1] + sh and tp[1] + th > sp[1]
+  end
+  return false
+end
+
 function M.close_buf(buf, force)
   local tracker = require("winbuf.tracker")
   buf = buf or api.nvim_get_current_buf()
-
-  if not api.nvim_buf_is_valid(buf) then
-    return
-  end
+  if not api.nvim_buf_is_valid(buf) then return end
 
   local win = api.nvim_get_current_win()
   local win_bufs = tracker.get_win_bufs(win)
 
-  -- Suppress tracking to prevent BufEnter from re-adding during switch
   tracker._suppress_tracking = true
 
-  -- Remove buffer from this window's tracking
   tracker.remove_buf_from_win(win, buf)
 
-  -- If this buffer is currently displayed, switch to nearest neighbor
   if api.nvim_win_get_buf(win) == buf then
-    local neighbor = find_nearest_neighbor(win_bufs, buf)
-
-    if neighbor then
-      api.nvim_win_set_buf(win, neighbor)
+    local next_buf = nearest_neighbor(win_bufs, buf)
+    if next_buf then
+      api.nvim_win_set_buf(win, next_buf)
+    elseif #api.nvim_list_wins() > 1 then
+      vim.cmd("close")
     else
-      if #api.nvim_list_wins() > 1 then
-        vim.cmd("close")
-      else
-        vim.cmd("enew")
-      end
+      vim.cmd("enew")
     end
   end
 
   tracker._suppress_tracking = false
 
-  -- Only fully delete if no other window is tracking this buffer
   if api.nvim_buf_is_valid(buf) and not tracker.is_buf_in_any_win(buf) then
     delete_buf(buf, force)
   end
@@ -91,25 +92,18 @@ function M.close_buf(buf, force)
   require("winbuf.render").refresh_all()
 end
 
---- Close the current split and delete any buffers not tracked in other windows.
---- @param force? boolean Force delete orphaned modified buffers
 function M.close_split(force)
   local tracker = require("winbuf.tracker")
   local win = api.nvim_get_current_win()
   local win_bufs = tracker.get_win_bufs(win)
 
-  if #api.nvim_list_wins() <= 1 then
-    return
-  end
+  if #api.nvim_list_wins() <= 1 then return end
 
-  -- Suppress tracking to prevent WinEnter/BufEnter from re-adding orphans
   tracker._suppress_tracking = true
-
   vim.cmd("close")
-
   tracker._suppress_tracking = false
 
-  -- Delete orphaned buffers (not tracked in any remaining window)
+  -- Clean up orphans
   for _, buf in ipairs(win_bufs) do
     if api.nvim_buf_is_valid(buf) and vim.bo[buf].buflisted then
       if not tracker.is_buf_in_any_win(buf) then
@@ -121,148 +115,75 @@ function M.close_split(force)
   require("winbuf.render").refresh_all()
 end
 
---- Check if a window is truly in the expected direction from the source window.
---- Prevents wincmd from "wrapping" to a diagonal/adjacent window.
---- @param src_win number Source window handle
---- @param tgt_win number Target window handle
---- @param direction string One of "h", "j", "k", "l"
---- @return boolean
-local function is_in_direction(src_win, tgt_win, direction)
-  local src_pos = api.nvim_win_get_position(src_win) -- { row, col }
-  local tgt_pos = api.nvim_win_get_position(tgt_win)
-  local src_h = api.nvim_win_get_height(src_win)
-  local src_w = api.nvim_win_get_width(src_win)
-  local tgt_h = api.nvim_win_get_height(tgt_win)
-  local tgt_w = api.nvim_win_get_width(tgt_win)
-
-  if direction == "j" then
-    -- Target must start at or below the bottom edge of source
-    -- and overlap horizontally (+1 accounts for window separator/statusline)
-    return tgt_pos[1] >= src_pos[1] + src_h
-      and tgt_pos[2] < src_pos[2] + src_w
-      and tgt_pos[2] + tgt_w > src_pos[2]
-  elseif direction == "k" then
-    -- Target bottom edge must be at or above the top edge of source
-    -- and overlap horizontally
-    return tgt_pos[1] + tgt_h <= src_pos[1]
-      and tgt_pos[2] < src_pos[2] + src_w
-      and tgt_pos[2] + tgt_w > src_pos[2]
-  elseif direction == "l" then
-    -- Target must start at or past the right edge of source
-    -- and overlap vertically (+1 accounts for window separator)
-    return tgt_pos[2] >= src_pos[2] + src_w
-      and tgt_pos[1] < src_pos[1] + src_h
-      and tgt_pos[1] + tgt_h > src_pos[1]
-  elseif direction == "h" then
-    -- Target right edge must be at or before the left edge of source
-    -- and overlap vertically
-    return tgt_pos[2] + tgt_w <= src_pos[2]
-      and tgt_pos[1] < src_pos[1] + src_h
-      and tgt_pos[1] + tgt_h > src_pos[1]
-  end
-  return false
-end
-
---- Move the current buffer to an adjacent split (VS Code editor group style).
---- Creates a new split if none exists in that direction.
---- @param direction string One of "h", "j", "k", "l"
 function M.move_buf(direction)
   local tracker = require("winbuf.tracker")
   local buf = api.nvim_get_current_buf()
-  local cur_win = api.nvim_get_current_win()
+  local src_win = api.nvim_get_current_win()
 
-  -- Only move normal file buffers
-  if vim.bo[buf].buftype ~= "" or not vim.bo[buf].buflisted then
-    return
-  end
+  if vim.bo[buf].buftype ~= "" or not vim.bo[buf].buflisted then return end
 
-  -- Suppress tracking for the entire move operation
   tracker._suppress_tracking = true
 
-  -- Try to move to the target direction
+  -- See where wincmd takes us
   vim.cmd("wincmd " .. direction)
-  local target_win = api.nvim_get_current_win()
+  local tgt_win = api.nvim_get_current_win()
 
-  -- Verify the target is actually in the intended direction
-  -- wincmd can jump diagonally (e.g., a|b with wincmd j goes to b)
-  local need_new_split = target_win == cur_win
-    or not is_in_direction(cur_win, target_win, direction)
+  -- If wincmd went nowhere or went somewhere wrong, make a new split
+  local need_split = tgt_win == src_win
+    or not is_in_direction(src_win, tgt_win, direction)
 
-  if need_new_split then
-    -- Go back to source if wincmd moved us to the wrong window
-    if target_win ~= cur_win then
-      api.nvim_set_current_win(cur_win)
-    end
-    -- Create a new split in the correct direction
-    if direction == "l" then
-      vim.cmd("rightbelow vsplit")
-    elseif direction == "h" then
-      vim.cmd("leftabove vsplit")
-    elseif direction == "j" then
-      vim.cmd("rightbelow split")
-    elseif direction == "k" then
-      vim.cmd("leftabove split")
-    end
-    target_win = api.nvim_get_current_win()
+  if need_split then
+    if tgt_win ~= src_win then api.nvim_set_current_win(src_win) end
+
+    local split_cmds = {
+      l = "rightbelow vsplit", h = "leftabove vsplit",
+      j = "rightbelow split",  k = "leftabove split",
+    }
+    vim.cmd(split_cmds[direction])
+    tgt_win = api.nvim_get_current_win()
   end
 
-  -- Go back to the original window
-  api.nvim_set_current_win(cur_win)
+  -- Back to source — swap buffers
+  api.nvim_set_current_win(src_win)
 
-  -- Find nearest neighbor buffer in the source window to switch to
-  local win_bufs = tracker.get_win_bufs(cur_win)
-  local neighbor = find_nearest_neighbor(win_bufs, buf)
+  local win_bufs = tracker.get_win_bufs(src_win)
+  local next_buf = nearest_neighbor(win_bufs, buf)
 
-  if neighbor then
-    api.nvim_win_set_buf(cur_win, neighbor)
-  else
-    -- No other buffers — close the source split
-    if #api.nvim_list_wins() > 1 then
-      vim.cmd("close")
-    end
+  if next_buf then
+    api.nvim_win_set_buf(src_win, next_buf)
+  elseif #api.nvim_list_wins() > 1 then
+    vim.cmd("close")
   end
 
-  -- Remove the buffer from the source window's tracking
-  tracker.remove_buf_from_win(cur_win, buf)
+  tracker.remove_buf_from_win(src_win, buf)
 
-  -- Set the buffer in the target window and add to tracking
-  api.nvim_set_current_win(target_win)
-  api.nvim_win_set_buf(target_win, buf)
-  tracker.add_buf_to_win(target_win, buf)
+  api.nvim_set_current_win(tgt_win)
+  api.nvim_win_set_buf(tgt_win, buf)
+  tracker.add_buf_to_win(tgt_win, buf)
 
-  -- Re-enable tracking
   tracker._suppress_tracking = false
 
   require("winbuf.render").refresh_all()
 end
 
---- Cycle through buffers in the current window's group.
---- @param offset number Positive for next, negative for previous
 function M.cycle(offset)
   local tracker = require("winbuf.tracker")
   local win = api.nvim_get_current_win()
-  local cur_buf = api.nvim_get_current_buf()
+  local cur = api.nvim_get_current_buf()
   local bufs = tracker.get_win_bufs(win)
 
-  -- Filter to valid listed buffers
   bufs = vim.tbl_filter(function(b)
     return api.nvim_buf_is_valid(b) and vim.bo[b].buflisted
   end, bufs)
 
-  if #bufs < 2 then
-    return
-  end
+  if #bufs < 2 then return end
 
   local idx = 1
   for i, b in ipairs(bufs) do
-    if b == cur_buf then
-      idx = i
-      break
-    end
+    if b == cur then idx = i; break end
   end
 
-  local new_idx = ((idx - 1 + offset) % #bufs) + 1
-  api.nvim_set_current_buf(bufs[new_idx])
+  api.nvim_set_current_buf(bufs[((idx - 1 + offset) % #bufs) + 1])
 end
 
 return M
