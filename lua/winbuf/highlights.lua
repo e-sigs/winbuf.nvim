@@ -24,10 +24,12 @@ local function apply()
   for _, def in ipairs(groups) do
     local hl = hl_config[def[2]]
     if hl then
+      -- force = true so colorschemes can't silently clear these
       api.nvim_set_hl(0, def[1], {
         fg = hl.fg, bg = hl.bg,
         bold = hl.bold, italic = hl.italic,
         underline = hl.underline, sp = hl.sp,
+        default = false,
       })
     end
   end
@@ -41,6 +43,10 @@ function M.setup(hl)
     group = api.nvim_create_augroup("WinBufHighlights", { clear = true }),
     callback = apply,
   })
+
+  -- Some themes apply colors on a deferred schedule. Reapply once more
+  -- after the event loop settles to make sure we win.
+  vim.schedule(apply)
 end
 
 return M
