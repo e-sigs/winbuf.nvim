@@ -34,6 +34,19 @@ local function nearest_neighbor(bufs, buf)
   return remaining[#remaining].buf
 end
 
+-- Check if a window is a "normal" editable window (not floating, not special buftype)
+local function is_normal_win(win)
+  if not api.nvim_win_is_valid(win) then return false end
+  -- Skip floating windows
+  local cfg = api.nvim_win_get_config(win)
+  if cfg.relative and cfg.relative ~= "" then return false end
+  -- Skip windows with special buftype (noice, terminal, quickfix, etc.)
+  local buf = api.nvim_win_get_buf(win)
+  local bt = vim.bo[buf].buftype
+  if bt ~= "" then return false end
+  return true
+end
+
 -- wincmd can jump diagonally (e.g. in a|b layout, wincmd j lands on b).
 -- This checks the target is geometrically where we actually want it.
 local function is_in_direction(src, tgt, dir)
@@ -128,9 +141,10 @@ function M.move_buf(direction)
   vim.cmd("wincmd " .. direction)
   local tgt_win = api.nvim_get_current_win()
 
-  -- If wincmd went nowhere or went somewhere wrong, make a new split
+  -- If wincmd went nowhere, went somewhere wrong, or landed on a special window, make a new split
   local need_split = tgt_win == src_win
     or not is_in_direction(src_win, tgt_win, direction)
+    or not is_normal_win(tgt_win)
 
   if need_split then
     if tgt_win ~= src_win then api.nvim_set_current_win(src_win) end
