@@ -6,6 +6,7 @@ local winbuf = nil -- lazy-loaded below
 local tracker = nil
 
 local click_cache = {}
+local owned = {}
 
 local function get_diagnostics(buf)
   if not api.nvim_buf_is_valid(buf) then
@@ -139,12 +140,12 @@ function M.render(win)
     -- Close button
     local close_btn = ""
     if show_close then
-      local click_fn = string.format("%%@v:lua.require'winbuf.render'.close_click_%d@", buf)
+      local click_fn = string.format("%%@v:lua.require'winbuf.render'.close_click_%d_%d@", win, buf)
       close_btn = " " .. close_hl .. click_fn .. config.close_icon .. "%X" .. hl
     end
 
     -- Tab body click handler
-    local click = string.format("%%@v:lua.require'winbuf.render'.switch_click_%d@", buf)
+    local click = string.format("%%@v:lua.require'winbuf.render'.switch_click_%d_%d@", win, buf)
 
     local tab_content = table.concat(content, "")
     local tab
@@ -167,64 +168,81 @@ function M.render(win)
 end
 
 function M.eval_win(win)
-  if not api.nvim_win_is_valid(win) then return "" end
-  if vim.bo[api.nvim_win_get_buf(win)].buftype ~= "" then return "" end
+  if not require("winbuf.tracker").eligible(win) then
+    return ""
+  end
   return M.render(win)
 end
 
 function M.refresh_all()
+  for win in pairs(owned) do
+    if not api.nvim_win_is_valid(win) then
+      owned[win] = nil
+    end
+  end
   for _, win in ipairs(api.nvim_list_wins()) do
-    if api.nvim_win_is_valid(win) then
-      local bt = vim.bo[api.nvim_win_get_buf(win)].buftype
-      if bt == "" then
-        api.nvim_set_option_value(
-          "winbar",
-          "%{%v:lua.require'winbuf.render'.eval_win(" .. win .. ")%}",
-          { win = win }
-        )
-      else
-        api.nvim_set_option_value("winbar", "", { win = win })
+    local value = vim.wo[win].winbar
+    local owner = owned[win]
+    if require("winbuf.tracker").eligible(win) then
+      local inherited = value:find("v:lua.require'winbuf.render'.eval_win", 1, true)
+      if not owner and (value == "" or inherited) then
+        owner = { previous = "", written = "" }
+        owned[win] = owner
       end
+      if owner and (value == "" or value == owner.written or inherited) then
+        owner.written = "%{%v:lua.require'winbuf.render'.eval_win(" .. win .. ")%}"
+        vim.wo[win].winbar = owner.written
+      end
+    elseif owner then
+      if value == owner.written then
+        vim.wo[win].winbar = owner.previous
+      end
+      owned[win] = nil
+    elseif value:find("v:lua.require'winbuf.render'.eval_win", 1, true) then
+      -- A special split may inherit our expression. Remove only our own bar.
+      vim.wo[win].winbar = ""
+    end
+  end
+  for key in pairs(click_cache) do
+    local win, buf = key:match("_click_(%d+)_(%d+)$")
+    if not api.nvim_win_is_valid(tonumber(win)) or not api.nvim_buf_is_valid(tonumber(buf)) then
+      click_cache[key] = nil
     end
   end
 end
 
 function M.prune_click_cache(buf)
-  click_cache["switch_click_" .. buf] = nil
-  click_cache["close_click_" .. buf] = nil
+  for key in pairs(click_cache) do
+    if key:match("_(%d+)$") == tostring(buf) then
+      click_cache[key] = nil
+    end
+  end
 end
 
 function M.setup()
   M.refresh_all()
 end
 
--- Click handlers via metatable — cached so we're not creating closures on every render
 setmetatable(M, {
   __index = function(_, key)
-    if click_cache[key] then return click_cache[key] end
-
-    local switch_id = key:match("^switch_click_(%d+)$")
-    if switch_id then
-      local buf = tonumber(switch_id)
-      local fn = function(_, _, button, _)
-        if button == "l" and api.nvim_buf_is_valid(buf) then
-          api.nvim_set_current_buf(buf)
-        elseif button == "m" then
-          require("winbuf.actions").close_buf(buf)
-        end
+    if click_cache[key] then
+      return click_cache[key]
+    end
+    local kind, win, buf = key:match("^(%a+)_click_(%d+)_(%d+)$")
+    if not kind then
+      return
+    end
+    win, buf = tonumber(win), tonumber(buf)
+    local fn = function(_, _, button)
+      local actions = require("winbuf.actions")
+      if kind == "close" and button == "l" or button == "m" then
+        actions.close_buf(buf, false, win)
+      elseif kind == "switch" and button == "l" then
+        actions.select(buf, win)
       end
-      click_cache[key] = fn
-      return fn
     end
-
-    local close_id = key:match("^close_click_(%d+)$")
-    if close_id then
-      local buf = tonumber(close_id)
-      local fn = function() require("winbuf.actions").close_buf(buf) end
-      click_cache[key] = fn
-      return fn
-    end
+    click_cache[key] = fn
+    return fn
   end,
 })
-
 return M

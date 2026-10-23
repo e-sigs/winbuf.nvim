@@ -30,7 +30,8 @@ local defaults = {
   show_buffer_ordinal = false,
   truncate_names = true,
   fill_hl = nil,
-  buf_delete = nil,
+  resolve_modified = nil,
+  eligible = nil,
   highlights = {
     active              = { fg = "#ABB2BF", bg = "#2C313C", bold = true },
     active_sep          = { fg = "#61AFEF", bg = "#2C313C" },
@@ -70,9 +71,12 @@ function M.setup(opts)
   vim.validate({
     separator_style = { opts.separator_style, { "string", "table" }, true },
     diagnostics = { opts.diagnostics, { "boolean", "string" }, true },
-    buf_delete = { opts.buf_delete, "function", true },
+    resolve_modified = { opts.resolve_modified, "function", true },
+    eligible = { opts.eligible, "function", true },
   })
 
+  assert(opts.buf_delete == nil,
+    "winbuf: buf_delete has ambiguous cancellation semantics; use resolve_modified returning save/discard/cancel")
   M.config = vim.tbl_deep_extend("force", defaults, opts)
 
   require("winbuf.highlights").setup(M.config.highlights)
@@ -84,19 +88,19 @@ end
 -- Public API
 
 function M.close_buf(buf, force)
-  require("winbuf.actions").close_buf(buf, force)
+  return require("winbuf.actions").close_buf(buf, force)
 end
 
 function M.close_split(force)
-  require("winbuf.actions").close_split(force)
+  return require("winbuf.actions").close_split(force)
 end
 
 function M.move_buf(direction)
-  require("winbuf.actions").move_buf(direction)
+  return require("winbuf.actions").move_buf(direction)
 end
 
 function M.cycle(offset)
-  require("winbuf.actions").cycle(offset)
+  return require("winbuf.actions").cycle(offset)
 end
 
 function M.remove_buf_from_win(win, buf)

@@ -88,7 +88,8 @@ require("winbuf").setup({
   truncate_names = true,
   show_buffer_ordinal = false,
   diagnostics = false,      -- set to "nvim_lsp" to enable
-  buf_delete = nil,         -- custom delete fn, e.g. Snacks.bufdelete
+  resolve_modified = nil,   -- synchronous save/discard/cancel decision; defaults to a prompt
+  eligible = nil,           -- optional additional window exclusion predicate
 })
 ```
 
@@ -118,17 +119,48 @@ require("winbuf").setup({
 })
 ```
 
-### Custom Buffer Delete
+### Safe closing and eligibility
 
-Works with [snacks.nvim](https://github.com/folke/snacks.nvim) or [mini.bufremove](https://github.com/echasnovski/mini.bufremove):
+Closing a modified buffer's final group/display reference prompts for Save,
+Discard, or Cancel (default). Cancel, a failed save, or an empty unnamed-save path
+leaves membership and selection intact. Closing a group also checks its inactive
+modified files. A shared buffer remains alive while another group or window
+references it. Only an explicit Discard or `!` permits forced deletion.
+
+**Compatibility change:** `buf_delete` is no longer accepted. A void callback
+(such as an asynchronous deletion UI) cannot distinguish successful completion
+from cancellation. Instead, `resolve_modified(buf)` may synchronously return
+`"save"`, `"discard"`, or `"cancel"`; all other results cancel. The plugin owns
+saving and deletion. Omit this option to use the built-in confirmation prompt.
+Do not wrap an asynchronous `vim.ui.select` call in this synchronous hook.
 
 ```lua
--- snacks
-buf_delete = function(buf) Snacks.bufdelete(buf) end
-
--- mini.bufremove
-buf_delete = function(buf) require("mini.bufremove").delete(buf, false) end
+require("winbuf").setup({
+  -- Optional integration hook: return false for plugin-owned editor windows.
+  eligible = function(win, buf)
+    return not vim.w[win].my_plugin_window
+  end,
+})
 ```
+
+Floating, preview, diff, and special-buftype windows are always excluded.
+`vim.w.winbuf_exclude` and `vim.b.winbuf_exclude` also opt out. Eligibility applies
+to tracking, rendering, cycling, moves, and closing; an exclusion never clears
+another plugin's winbar. Existing nonempty third-party winbars are respected.
+
+New splits start with their displayed file rather than copied inactive membership.
+A final empty editor remains open; reusable empty buffers are unlisted and become
+listed again when edited. Ordinary native `:close` does not invoke winbuf's
+inactive-file checks: use `WinBufCloseSplit` for protected whole-group closing.
+Save decisions can write files before a later prompt cancels a multi-file close.
+Arbitrary third-party autocmd side effects cannot be rolled back. If orphan cleanup
+fails after a group closes, surviving files are retained in another editor and a
+warning is shown rather than silently abandoning them.
+
+The action APIs return true on completion and false on cancellation/refusal.
+No session persistence or session restoration is installed.
+
+See [tests/README.md](tests/README.md) for reproduction and regression commands.
 
 ### Highlight Groups
 
